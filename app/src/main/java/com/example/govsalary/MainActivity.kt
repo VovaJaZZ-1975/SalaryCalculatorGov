@@ -1,9 +1,13 @@
 package com.example.govsalary
 
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -144,30 +148,37 @@ fun HistoryScreen(viewModel: SalaryViewModel) {
     val historyList by viewModel.history.collectAsState()
     val context = LocalContext.current
 
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? ->
+            uri?.let { parseCsvAndSave(context, it, viewModel) }
+        }
+    )
+
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Ретроспектива", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (historyList.isEmpty()) {
-            Text("История пуста. Вы можете загрузить тестовые данные за прошлые месяцы.")
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    // Симуляция импорта данных (ретроспектива)
-                    val mockData = listOf(
-                        SalaryHistoryEntity(year = 2026, month = 1, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("81500.50")),
-                        SalaryHistoryEntity(year = 2026, month = 2, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("81805.93")),
-                        SalaryHistoryEntity(year = 2026, month = 3, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("95000.00")) // С премией
-                    )
-                    mockData.forEach { viewModel.saveCalculation(it) }
-                    Toast.makeText(context, "Ретроспектива загружена!", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Загрузить ретроспективу (Демо)")
+        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Формат CSV:", fontWeight = FontWeight.Bold)
+                Text("Год;Месяц;Оклад;Чин;НаРуки", style = MaterialTheme.typography.bodySmall)
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { launcher.launch(arrayOf("text/csv", "text/comma-separated-values", "application/csv", "*/*")) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Загрузить из CSV")
+                }
             }
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (historyList.isEmpty()) {
+            Text("История пуста. Загрузите данные или сохраните расчет в Калькуляторе.")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(historyList) { item ->
@@ -181,6 +192,36 @@ fun HistoryScreen(viewModel: SalaryViewModel) {
                 }
             }
         }
+    }
+}
+
+fun parseCsvAndSave(context: Context, uri: Uri, viewModel: SalaryViewModel) {
+    try {
+        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+            val lines = reader.readLines()
+            if (lines.size <= 1) {
+                Toast.makeText(context, "Файл пуст или содержит только заголовок", Toast.LENGTH_SHORT).show()
+                return
+            }
+            var successCount = 0
+            for (i in 1 until lines.size) {
+                val line = lines[i]
+                val tokens = line.split(";", ",").map { it.trim().replace(",", ".") } // Поддержка разделителей
+                if (tokens.size >= 5) {
+                    val year = tokens[0].toIntOrNull() ?: continue
+                    val month = tokens[1].toIntOrNull() ?: continue
+                    val base = tokens[2].toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val rank = tokens[3].toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val net = tokens[4].toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    
+                    viewModel.saveCalculation(SalaryHistoryEntity(year = year, month = month, baseSalary = base, rankSalary = rank, netAmount = net))
+                    successCount++
+                }
+            }
+            Toast.makeText(context, "Успешно загружено записей: $successCount", Toast.LENGTH_LONG).show()
+        }
+    } catch (e: Exception) {
+        Toast.makeText(context, "Ошибка чтения CSV: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
     }
 }
 
