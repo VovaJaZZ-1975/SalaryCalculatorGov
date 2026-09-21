@@ -40,11 +40,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val app = application as GovSalaryApp
         val factory = SalaryViewModelFactory(app.database.salaryHistoryDao())
+        val importFactory = ImportViewModelFactory(app.database.salaryHistoryDao())
         
         setContent {
             MaterialTheme {
                 val viewModel: SalaryViewModel = viewModel(factory = factory)
-                MainScreen(viewModel)
+                val importViewModel: ImportViewModel = viewModel(factory = importFactory)
+                MainScreen(viewModel, importViewModel)
             }
         }
     }
@@ -57,7 +59,7 @@ sealed class BottomNavItem(val route: String, val title: String, val icon: Image
 }
 
 @Composable
-fun MainScreen(viewModel: SalaryViewModel) {
+fun MainScreen(viewModel: SalaryViewModel, importViewModel: ImportViewModel) {
     val navController = rememberNavController()
     Scaffold(
         bottomBar = { BottomNavigationBar(navController) }
@@ -69,7 +71,7 @@ fun MainScreen(viewModel: SalaryViewModel) {
         ) {
             composable(BottomNavItem.Dashboard.route) { DashboardScreen(viewModel) }
             composable(BottomNavItem.Calculator.route) { SalaryCalculatorScreen(viewModel) }
-            composable(BottomNavItem.History.route) { HistoryScreen(viewModel) }
+            composable(BottomNavItem.History.route) { HistoryScreen(viewModel, importViewModel) }
         }
     }
 }
@@ -104,7 +106,6 @@ fun BottomNavigationBar(navController: NavHostController) {
 @Composable
 fun DashboardScreen(viewModel: SalaryViewModel) {
     val historyList by viewModel.history.collectAsState()
-    
     val totalNet = historyList.sumOf { it.netAmount.toDouble() }
     val avgNet = if (historyList.isNotEmpty()) totalNet / historyList.size else 0.0
 
@@ -114,13 +115,10 @@ fun DashboardScreen(viewModel: SalaryViewModel) {
     ) {
         Text("Мой Доход", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(24.dp))
-        
         DashboardCard("Всего заработано", "${"%.2f".format(totalNet)} ₽", Icons.Default.CheckCircle)
         Spacer(modifier = Modifier.height(16.dp))
-        
         DashboardCard("Средний доход в месяц", "${"%.2f".format(avgNet)} ₽", Icons.Default.Info)
         Spacer(modifier = Modifier.height(16.dp))
-        
         DashboardCard("Сохранено периодов", "${historyList.size} мес.", Icons.Default.DateRange)
     }
 }
@@ -144,36 +142,14 @@ fun DashboardCard(title: String, value: String, icon: ImageVector) {
 }
 
 @Composable
-fun HistoryScreen(viewModel: SalaryViewModel) {
+fun HistoryScreen(viewModel: SalaryViewModel, importViewModel: ImportViewModel) {
     val historyList by viewModel.history.collectAsState()
-    val context = LocalContext.current
-
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri: Uri? ->
-            uri?.let { parseCsvAndSave(context, it, viewModel) }
-        }
-    )
-
+    
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Ретроспектива", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(16.dp))
 
-        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("Формат CSV:", fontWeight = FontWeight.Bold)
-                Text("Год;Месяц;Оклад;Чин;НаРуки", style = MaterialTheme.typography.bodySmall)
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = { launcher.launch(arrayOf("text/csv", "text/comma-separated-values", "application/csv", "*/*")) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Загрузить из CSV")
-                }
-            }
-        }
+        ImportCsvSection(importViewModel)
         
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -195,33 +171,82 @@ fun HistoryScreen(viewModel: SalaryViewModel) {
     }
 }
 
-fun parseCsvAndSave(context: Context, uri: Uri, viewModel: SalaryViewModel) {
-    try {
-        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
-            val lines = reader.readLines()
-            if (lines.size <= 1) {
-                Toast.makeText(context, "Файл пуст или содержит только заголовок", Toast.LENGTH_SHORT).show()
-                return
-            }
-            var successCount = 0
-            for (i in 1 until lines.size) {
-                val line = lines[i]
-                val tokens = line.split(";", ",").map { it.trim().replace(",", ".") } // Поддержка разделителей
-                if (tokens.size >= 5) {
-                    val year = tokens[0].toIntOrNull() ?: continue
-                    val month = tokens[1].toIntOrNull() ?: continue
-                    val base = tokens[2].toBigDecimalOrNull() ?: BigDecimal.ZERO
-                    val rank = tokens[3].toBigDecimalOrNull() ?: BigDecimal.ZERO
-                    val net = tokens[4].toBigDecimalOrNull() ?: BigDecimal.ZERO
-                    
-                    viewModel.saveCalculation(SalaryHistoryEntity(year = year, month = month, baseSalary = base, rankSalary = rank, netAmount = net))
-                    successCount++
-                }
-            }
-            Toast.makeText(context, "Успешно загружено записей: $successCount", Toast.LENGTH_LONG).show()
+@Composable
+fun ImportCsvSection(importViewModel: ImportViewModel) {
+    val context = LocalContext.current
+    val importState by importViewModel.importState.collectAsState()
+    var overwriteExisting by remember { mutableStateOf(false) }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            uri?.let { importViewModel.previewCsvImport(context, it) }
         }
-    } catch (e: Exception) {
-        Toast.makeText(context, "Ошибка чтения CSV: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+    )
+
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("Формат CSV:", fontWeight = FontWeight.Bold)
+            Text("Год;Месяц;Оклад;Чин;ЕДП;Гостайна;Особые;Выслуга;Премия;Дни;Отработано", style = MaterialTheme.typography.labelSmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = { launcher.launch(arrayOf("*/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Загрузить из CSV (Предпросмотр)")
+            }
+        }
+    }
+
+    when (val state = importState) {
+        is ImportState.Preview -> {
+            AlertDialog(
+                onDismissRequest = { importViewModel.resetState() },
+                title = { Text("Предпросмотр импорта") },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Найдено корректных записей: ${state.parsedData.size}")
+                        if (state.existingConflicts > 0) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Конфликты: ${state.existingConflicts} (такие периоды уже есть)", color = MaterialTheme.colorScheme.error)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = overwriteExisting, onCheckedChange = { overwriteExisting = it })
+                                Text("Перезаписать старые данные", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        Divider(modifier = Modifier.padding(vertical = 8.dp))
+                        LazyColumn(modifier = Modifier.height(150.dp)) {
+                            items(state.parsedData) { item ->
+                                Text("${item.month}.${item.year} -> ${item.netAmount} ₽", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { importViewModel.applyImport(state.parsedData, overwriteExisting) }) { Text("Импорт") }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { importViewModel.resetState() }) { Text("Отмена") }
+                }
+            )
+        }
+        is ImportState.Error -> {
+            AlertDialog(
+                onDismissRequest = { importViewModel.resetState() },
+                title = { Text("Ошибка") },
+                text = { Text(state.message) },
+                confirmButton = { Button(onClick = { importViewModel.resetState() }) { Text("ОК") } }
+            )
+        }
+        is ImportState.Success -> {
+            LaunchedEffect(Unit) {
+                Toast.makeText(context, "Импорт завершен!", Toast.LENGTH_SHORT).show()
+                importViewModel.resetState()
+            }
+        }
+        ImportState.Idle -> {}
     }
 }
 
@@ -248,17 +273,13 @@ fun SalaryCalculatorScreen(viewModel: SalaryViewModel) {
     val secret = base * sRatio
     val conditions = base * cRatio
     val experience = base * eRatio
-    
     val gross = base + rank + incentive + secret + conditions + experience + bns
     val tax = gross * 0.13
     val net = gross - tax
 
-    Column(
-        modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())
-    ) {
+    Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("Калькулятор ЗП", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(16.dp))
-        
         InputField("Должностной оклад", baseSalary, Icons.Default.Person) { baseSalary = it }
         InputField("Классный чин", rankSalary, Icons.Default.Star) { rankSalary = it }
         InputField("Поощрение (коэф)", incentiveRatio, Icons.Default.ThumbUp) { incentiveRatio = it }
@@ -266,47 +287,34 @@ fun SalaryCalculatorScreen(viewModel: SalaryViewModel) {
         InputField("Особые условия (коэф)", conditionsRatio, Icons.Default.Info) { conditionsRatio = it }
         InputField("Выслуга лет (коэф)", experienceRatio, Icons.Default.DateRange) { experienceRatio = it }
         InputField("Премия", bonus, Icons.Default.Favorite) { bonus = it }
-        
         Spacer(modifier = Modifier.height(16.dp))
         Divider()
         Spacer(modifier = Modifier.height(16.dp))
-        
         ResultRow("Начислено (Gross):", gross)
         ResultRow("НДФЛ (13%):", tax)
         Text("Итого на руки: ${"%.2f".format(net)} ₽", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
-
         Spacer(modifier = Modifier.height(24.dp))
-        
         Button(
             onClick = {
                 val cal = Calendar.getInstance()
-                val entity = SalaryHistoryEntity(
-                    year = cal.get(Calendar.YEAR),
-                    month = cal.get(Calendar.MONTH) + 1,
-                    baseSalary = BigDecimal(base),
-                    rankSalary = BigDecimal(rank),
-                    netAmount = BigDecimal(net)
-                )
-                viewModel.saveCalculation(entity)
-                Toast.makeText(context, "Расчет успешно сохранен", Toast.LENGTH_SHORT).show()
+                viewModel.saveCalculation(SalaryHistoryEntity(
+                    year = cal.get(Calendar.YEAR), month = cal.get(Calendar.MONTH) + 1,
+                    baseSalary = BigDecimal(base), rankSalary = BigDecimal(rank), netAmount = BigDecimal(net)
+                ))
+                Toast.makeText(context, "Расчет сохранен", Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier.fillMaxWidth().height(50.dp)
-        ) {
-            Text("Сохранить расчет")
-        }
+        ) { Text("Сохранить расчет") }
     }
 }
 
 @Composable
 fun InputField(label: String, value: String, icon: ImageVector, onValueChange: (String) -> Unit) {
     OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
+        value = value, onValueChange = onValueChange, label = { Text(label) },
         leadingIcon = { Icon(imageVector = icon, contentDescription = label, tint = MaterialTheme.colorScheme.primary) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        singleLine = true
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), singleLine = true
     )
 }
 
