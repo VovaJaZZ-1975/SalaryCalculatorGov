@@ -63,7 +63,7 @@ fun MainScreen(viewModel: SalaryViewModel) {
             startDestination = BottomNavItem.Calculator.route,
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable(BottomNavItem.Dashboard.route) { DashboardScreen() }
+            composable(BottomNavItem.Dashboard.route) { DashboardScreen(viewModel) }
             composable(BottomNavItem.Calculator.route) { SalaryCalculatorScreen(viewModel) }
             composable(BottomNavItem.History.route) { HistoryScreen(viewModel) }
         }
@@ -98,36 +98,84 @@ fun BottomNavigationBar(navController: NavHostController) {
 }
 
 @Composable
-fun DashboardScreen() {
+fun DashboardScreen(viewModel: SalaryViewModel) {
+    val historyList by viewModel.history.collectAsState()
+    
+    val totalNet = historyList.sumOf { it.netAmount.toDouble() }
+    val avgNet = if (historyList.isNotEmpty()) totalNet / historyList.size else 0.0
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Аналитика и Дашборд", style = MaterialTheme.typography.headlineMedium)
+        Text("Мой Доход", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        DashboardCard("Всего заработано", "${"%.2f".format(totalNet)} ₽", Icons.Default.CheckCircle)
         Spacer(modifier = Modifier.height(16.dp))
-        Text("Графики будут подключены к базе данных на следующем этапе.", textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        
+        DashboardCard("Средний доход в месяц", "${"%.2f".format(avgNet)} ₽", Icons.Default.Info)
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        DashboardCard("Сохранено периодов", "${historyList.size} мес.", Icons.Default.DateRange)
+    }
+}
+
+@Composable
+fun DashboardCard(title: String, value: String, icon: ImageVector) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(modifier = Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(title, style = MaterialTheme.typography.bodyMedium)
+                Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
 @Composable
 fun HistoryScreen(viewModel: SalaryViewModel) {
     val historyList by viewModel.history.collectAsState()
+    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("История расчетов", style = MaterialTheme.typography.headlineMedium)
+        Text("Ретроспектива", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(16.dp))
 
         if (historyList.isEmpty()) {
-            Text("История пуста. Сохраните первый расчет в калькуляторе.")
+            Text("История пуста. Вы можете загрузить тестовые данные за прошлые месяцы.")
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    // Симуляция импорта данных (ретроспектива)
+                    val mockData = listOf(
+                        SalaryHistoryEntity(year = 2026, month = 1, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("81500.50")),
+                        SalaryHistoryEntity(year = 2026, month = 2, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("81805.93")),
+                        SalaryHistoryEntity(year = 2026, month = 3, baseSalary = BigDecimal("24296"), rankSalary = BigDecimal("13853"), netAmount = BigDecimal("95000.00")) // С премией
+                    )
+                    mockData.forEach { viewModel.saveCalculation(it) }
+                    Toast.makeText(context, "Ретроспектива загружена!", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Загрузить ретроспективу (Демо)")
+            }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(historyList) { item ->
                     Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Период: ${item.month}/${item.year}", fontWeight = FontWeight.Bold)
+                            Text("${String.format("%02d", item.month)}.${item.year}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                             Text("Оклад: ${item.baseSalary} ₽ | Чин: ${item.rankSalary} ₽")
-                            Text("На руки: ${item.netAmount} ₽", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text("На руки: ${item.netAmount} ₽", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
